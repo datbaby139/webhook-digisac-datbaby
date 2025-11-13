@@ -155,6 +155,57 @@ def testar():
             "timestamp": datetime.now().isoformat()
         }), 500
 
+@app.route('/webhook/upload-mapeamento', methods=['POST'])
+def upload_mapeamento():
+    """
+    Recebe o JSON de mapeamento telefone → IDs
+    Salva no servidor para uso posterior
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            logger.warning("⚠️  Upload sem dados")
+            return jsonify({
+                "status": "error",
+                "mensagem": "Nenhum dado recebido"
+            }), 400
+        
+        # Validar estrutura básica
+        if not isinstance(data, dict):
+            return jsonify({
+                "status": "error",
+                "mensagem": "Formato inválido. Esperado: objeto JSON"
+            }), 400
+        
+        # Salvar arquivo
+        with open('mapeamento_telefone_ids.json', 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        # Contar estatísticas
+        total_telefones = len(data)
+        total_marcacoes = sum(len(marcacoes) for marcacoes in data.values())
+        
+        logger.info(f"✅ Mapeamento atualizado: {total_telefones} telefones, {total_marcacoes} marcações")
+        
+        return jsonify({
+            "status": "success",
+            "mensagem": "Mapeamento atualizado com sucesso!",
+            "estatisticas": {
+                "total_telefones": total_telefones,
+                "total_marcacoes": total_marcacoes
+            },
+            "timestamp": datetime.now().isoformat()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao fazer upload do mapeamento: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "mensagem": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
 @app.route('/webhook/confirmar', methods=['POST'])
 def webhook_confirmar():
     """

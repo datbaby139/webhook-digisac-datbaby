@@ -158,6 +158,195 @@ def testar():
 @app.route('/webhook/confirmar', methods=['POST'])
 def webhook_confirmar():
     """
+    Recebe webhook do Digisac e confirma marcação(ões) no Visual ASA
+    
+    Payload esperado:
+    {
+        "telefone": "5521999999999"
+    }
+    
+    OU formato Digisac:
+    {
+        "event": "bot.command",
+        "data": {
+            "command": "524387"  (ID fixo - fallback)
+        }
+    }
+    """
+    try:
+        # Pegar dados do webhook
+        data = request.get_json()
+        
+        if not data:
+            logger.warning("⚠️  Webhook recebido sem dados")
+            return jsonify({
+                "status": "error",
+                "mensagem": "Nenhum dado recebido"
+            }), 400
+        
+        # Log do recebimento
+        logger.info(f"📩 Webhook recebido: {data}")
+        
+        # Tentar extrair telefone ou ID
+        telefone = None
+        id_marcacao = None
+        
+        # Formato 1: Telefone direto
+        telefone = data.get('telefone') or data.get('phone') or data.get('numero')
+        
+        # Formato 2: Digisac - dentro de data
+        if not telefone and 'data' in data:
+            data_obj = data.get('data', {})
+            
+            # Tentar pegar do contato
+            if 'message' in data_obj:
+                message = data_obj.get('message', {})
+                telefone = message.get('fromId')
+            
+            # Tentar pegar command como ID (fallback)
+            if not telefone:
+                id_marcacao = data_obj.get('command')
+        
+        # Se não tem telefone nem ID, erro
+        if not telefone and not id_marcacao:
+            logger.error("❌ Telefone ou ID não encontrado no payload")
+            return jsonify({
+                "status": "error",
+                "mensagem": "Telefone ou ID não encontrado",
+                "payload_recebido": data
+            }), 400
+        
+        # Se tem telefone, buscar IDs no JSON
+        ids_para_confirmar = []
+        
+        if telefone:
+            logger.info(f"📞 Processando confirmação para telefone: {telefone}")
+            
+            # Normalizar telefone (remover espaços, hífens, etc)
+            telefone_normalizado = ''.join(filter(str.isdigit, telefone))
+            
+            # Tentar carregar mapeamento do JSON
+            try:
+                with open('mapeamento_telefone_ids.json', 'r', encoding='utf-8') as f:
+                    mapeamento = json.load(f)
+                
+                logger.info(f"📊 Mapeamento carregado com {len(mapeamento)} telefones")
+                
+                # Buscar por telefone (testar várias formatações)
+                telefones_testar = [
+                    telefone,
+                    telefone_normalizado,
+                    f"55 {telefone_normalizado[2:4]}-{telefone_normalizado[4:9]}-{telefone_normalizado[9:]}",
+                    f"55 {telefone_normalizado[2:4]}-{telefone_normalizado[4:]}"
+                ]
+                
+                encontrado = False
+                for tel_teste in telefones_testar:
+                    if tel_teste in mapeamento:
+                        marcacoes_info = mapeamento[tel_teste]
+                        ids_para_confirmar = [m['id_marcacao'] for m in marcacoes_info]
+                        logger.info(f"✅ Encontrado {len(ids_para_confirmar)} marcação(ões) para {tel_teste}")
+                        encontrado = True
+                        break
+                
+                if not encontrado:
+                    logger.error(f"❌ Telefone {telefone} não encontrado no mapeamento")
+                    return jsonify({
+                        "status": "error",
+                        "mensagem": f"Telefone {telefone} não encontrado no mapeamento",
+                        "telefone_recebido": telefone
+                    }), 404
+                    
+            except FileNotFoundError:
+                logger.error("❌ Arquivo mapeamento_telefone_ids.json não encontrado")
+                return jsonify({
+                    "status": "error",
+                    "mensagem": "Arquivo de mapeamento não encontrado. Faça upload do JSON no servidor."
+                }), 500
+            except Exception as e:
+                logger.error(f"❌ Erro ao carregar mapeamento: {str(e)}")
+                return jsonify({
+                    "status": "error",
+                    "mensagem": f"Erro ao carregar mapeamento: {str(e)}"
+                }), 500
+        
+        # Se tem ID direto (fallback), usar ele
+        elif id_marcacao:
+            try:
+                ids_para_confirmar = [int(id_marcacao)]
+                logger.info(f"🔍 Usando ID direto: {id_marcacao}")
+            except:
+                logger.error(f"❌ ID inválido: {id_marcacao}")
+                return jsonify({
+                    "status": "error",
+                    "mensagem": f"ID inválido: {id_marcacao}"
+                }), 400
+        
+        # Confirmar todas as marcações
+        confirmadas = []
+        erros = []
+        
+        for id_marc in ids_para_confirmar:
+            try:
+                id_marc_int = int(id_marc)
+            except:
+                logger.error(f"❌ ID inválido: {id_marc}")
+                erros.append({"id": id_marc, "erro": "ID inválido"})
+                continue
+            
+            logger.info(f"📤 Confirmando marcação ID: {id_marc_int}")
+            
+            endpoint_confirmar = f"{VISUAL_ASA_URL}/marcacao/{id_marc_int}"
+            
+            payload_confirmar = {
+                "isEmailConfirmado": True,
+                "dataUltConfEmail": datetime.now().isoformat()
+            }
+            
+            response = requests.patch(
+                endpoint_confirmar,
+                headers=headers,
+                json=payload_confirmar,
+                timeout=30
+            )
+            
+            if response.status_code in [200, 204]:
+                logger.info(f"✅ Marcação {id_marc_int} confirmada com sucesso!")
+                confirmadas.append(id_marc_int)
+            else:
+                logger.error(f"❌ Erro ao confirmar marcação {id_marc_int}: {response.status_code}")
+                erros.append({"id": id_marc_int, "erro": f"Status {response.status_code}"})
+        
+        # Resposta final
+        if len(confirmadas) > 0:
+            mensagem = f"{len(confirmadas)} marcação(ões) confirmada(s) com sucesso!"
+            if len(erros) > 0:
+                mensagem += f" ({len(erros)} erro(s))"
+            
+            return jsonify({
+                "status": "success",
+                "mensagem": mensagem,
+                "confirmadas": confirmadas,
+                "erros": erros if erros else None,
+                "timestamp": datetime.now().isoformat()
+            }), 200
+        else:
+            return jsonify({
+                "status": "error",
+                "mensagem": "Nenhuma marcação foi confirmada",
+                "erros": erros,
+                "timestamp": datetime.now().isoformat()
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"❌ Erro no webhook: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "mensagem": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+def webhook_confirmar():
+    """
     Recebe webhook do Digisac e confirma marcação no Visual ASA
     
     Payload esperado:

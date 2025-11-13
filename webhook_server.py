@@ -165,6 +165,14 @@ def webhook_confirmar():
         "idMarcacao": 495367,
         "paciente": "Nome do Paciente" (opcional)
     }
+    
+    OU formato Digisac:
+    {
+        "event": "bot.command",
+        "data": {
+            "command": "524387"
+        }
+    }
     """
     try:
         # Pegar dados do webhook
@@ -180,8 +188,22 @@ def webhook_confirmar():
         # Log do recebimento
         logger.info(f"📩 Webhook recebido: {data}")
         
-        # Extrair ID da marcação
+        # Extrair ID da marcação de diferentes formatos possíveis
+        id_marcacao = None
+        
+        # Formato 1: Direto no root
         id_marcacao = data.get('idMarcacao') or data.get('id_marcacao') or data.get('id')
+        
+        # Formato 2: Digisac - dentro de data.command
+        if not id_marcacao and 'data' in data:
+            data_obj = data.get('data', {})
+            id_marcacao = data_obj.get('command')
+        
+        # Formato 3: Digisac - event wrapper
+        if not id_marcacao and 'event' in data:
+            if data.get('event') == 'bot.command':
+                data_obj = data.get('data', {})
+                id_marcacao = data_obj.get('command')
         
         if not id_marcacao:
             logger.error("❌ ID da marcação não encontrado no payload")

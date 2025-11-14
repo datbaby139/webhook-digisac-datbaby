@@ -185,9 +185,9 @@ def home():
     </html>
     """
 
-@app.route('/webhook/status', methods=['GET'])
-def status():
-    """Verifica status do servidor"""
+@app.route('/health', methods=['GET'])
+def health():
+    """Verifica status do servidor (health check)"""
     return jsonify({
         "status": "online",
         "servidor": "Webhook Digisac → Visual ASA",

@@ -6,7 +6,7 @@ Recebe confirmações do Digisac e confirma automaticamente no Visual ASA
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import logging
 import json

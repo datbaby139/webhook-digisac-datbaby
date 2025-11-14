@@ -23,10 +23,51 @@ app = Flask(__name__)
 VISUAL_ASA_URL = "http://deskweb2oci.ddns.net:9991"
 VISUAL_ASA_TOKEN = "c3Vwb3J0ZUB0ZWNub2FydGUuY29tLmJyOnB3ZHRlYzIwMjA="
 
+# Configuração API Digisac
+DIGISAC_API_URL = "https://api.digisac.app/v1"
+DIGISAC_TOKEN = os.environ.get('DIGISAC_TOKEN', '')  # Token configurado no Render
+
 headers = {
     "Authorization": f"Basic {VISUAL_ASA_TOKEN}",
     "Content-Type": "application/json"
 }
+
+def buscar_telefone_digisac(contact_id):
+    """
+    Busca o telefone do contato na API do Digisac usando contactId
+    """
+    if not DIGISAC_TOKEN:
+        logger.warning("⚠️  Token do Digisac não configurado")
+        return None
+    
+    try:
+        url = f"{DIGISAC_API_URL}/contacts/{contact_id}"
+        headers_digisac = {
+            "Authorization": f"Bearer {DIGISAC_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        
+        logger.info(f"🔍 Buscando telefone na API Digisac...")
+        
+        response = requests.get(url, headers=headers_digisac, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            telefone = data.get('phone') or data.get('number') or data.get('phoneNumber')
+            
+            if telefone:
+                logger.info(f"✅ Telefone encontrado: {telefone}")
+                return telefone
+            else:
+                logger.warning(f"⚠️  Sem telefone. Dados: {data}")
+                return None
+        else:
+            logger.error(f"❌ Erro API: {response.status_code} - {response.text[:200]}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Exceção: {str(e)}")
+        return None
 
 @app.route('/')
 def home():
@@ -261,12 +302,18 @@ def webhook_confirmar():
         if not telefone and 'data' in data:
             data_obj = data.get('data', {})
             
-            # Tentar pegar do contato
-            if 'message' in data_obj:
+            # Tentar buscar telefone via API Digisac usando contactId
+            contact_id = data_obj.get('contactId')
+            if contact_id:
+                logger.info(f"🆔 contactId encontrado: {contact_id}")
+                telefone = buscar_telefone_digisac(contact_id)
+            
+            # Fallback: Tentar pegar do message
+            if not telefone and 'message' in data_obj:
                 message = data_obj.get('message', {})
                 telefone = message.get('fromId')
             
-            # Tentar pegar command como ID (fallback)
+            # Fallback: Tentar pegar command como ID
             if not telefone:
                 id_marcacao = data_obj.get('command')
         

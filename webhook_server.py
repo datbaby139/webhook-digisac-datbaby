@@ -24,7 +24,7 @@ VISUAL_ASA_URL = "http://deskweb2oci.ddns.net:9991"
 VISUAL_ASA_TOKEN = "c3Vwb3J0ZUB0ZWNub2FydGUuY29tLmJyOnB3ZHRlYzIwMjA="
 
 # Configuração API Digisac
-DIGISAC_API_URL = "https://api.digisac.app/v1"
+DIGISAC_API_URL = "https://datbaby.digisac.me/api/v1"
 DIGISAC_TOKEN = os.environ.get('DIGISAC_TOKEN', '')  # Token configurado no Render
 
 headers = {
@@ -231,9 +231,12 @@ def upload_mapeamento():
                 "mensagem": "Formato inválido. Esperado: objeto JSON"
             }), 400
         
-        # Salvar arquivo
-        with open('mapeamento.json', 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # Salvar arquivo em múltiplos nomes para garantir
+        arquivos = ['mapeamento.json', 'mapeamento_telefone_ids.json', 'agenda_mapeamento.json']
+        
+        for arquivo in arquivos:
+            with open(arquivo, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
         
         # Contar estatísticas
         total_telefones = len(data)

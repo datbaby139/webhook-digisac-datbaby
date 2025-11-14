@@ -190,7 +190,7 @@ def upload_mapeamento():
             }), 400
         
         # Salvar arquivo
-        with open('mapeamento_telefone_ids.json', 'w', encoding='utf-8') as f:
+        with open('mapeamento.json', 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
         # Contar estatísticas
@@ -289,10 +289,29 @@ def webhook_confirmar():
             
             # Tentar carregar mapeamento do JSON
             try:
-                with open('mapeamento_telefone_ids.json', 'r', encoding='utf-8') as f:
-                    mapeamento = json.load(f)
+                # Tentar vários nomes possíveis
+                arquivos_possiveis = [
+                    'mapeamento_telefone_ids.json',
+                    'agenda_mapeamento.json',
+                    'mapeamento.json'
+                ]
                 
-                logger.info(f"📊 Mapeamento carregado com {len(mapeamento)} telefones")
+                mapeamento = None
+                arquivo_encontrado = None
+                
+                for arquivo in arquivos_possiveis:
+                    try:
+                        with open(arquivo, 'r', encoding='utf-8') as f:
+                            mapeamento = json.load(f)
+                            arquivo_encontrado = arquivo
+                            break
+                    except FileNotFoundError:
+                        continue
+                
+                if not mapeamento:
+                    raise FileNotFoundError("Nenhum arquivo de mapeamento encontrado")
+                
+                logger.info(f"📊 Mapeamento carregado de '{arquivo_encontrado}' com {len(mapeamento)} telefones")
                 
                 # Buscar por telefone (testar várias formatações)
                 telefones_testar = [

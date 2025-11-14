@@ -78,6 +78,36 @@ def buscar_telefone_digisac(contact_id):
         logger.error(f"❌ Exceção: {str(e)}")
         return None
 
+def salvar_confirmacao(id_marcacao, telefone):
+    """
+    Salva a confirmação para monitoramento
+    """
+    try:
+        arquivo_confirmacoes = 'confirmacoes.json'
+        
+        # Carregar confirmações existentes
+        if os.path.exists(arquivo_confirmacoes):
+            with open(arquivo_confirmacoes, 'r', encoding='utf-8') as f:
+                confirmacoes = json.load(f)
+        else:
+            confirmacoes = {}
+        
+        # Adicionar nova confirmação
+        confirmacoes[str(id_marcacao)] = {
+            'telefone': telefone,
+            'confirmado_em': datetime.now().isoformat(),
+            'status': 'confirmado'
+        }
+        
+        # Salvar de volta
+        with open(arquivo_confirmacoes, 'w', encoding='utf-8') as f:
+            json.dump(confirmacoes, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"💾 Confirmação salva: {id_marcacao}")
+        
+    except Exception as e:
+        logger.error(f"Erro ao salvar confirmação: {e}")
+
 @app.route('/')
 def home():
     """Página inicial"""
@@ -204,6 +234,76 @@ def testar():
             "status": "error",
             "mensagem": str(e),
             "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/webhook/status', methods=['GET'])
+def status_confirmacoes():
+    """
+    Retorna o status de todas as confirmações
+    Combina dados do mapeamento (enviados) e confirmações (confirmados)
+    """
+    try:
+        resultado = {
+            'total_enviados': 0,
+            'total_confirmados': 0,
+            'total_pendentes': 0,
+            'pacientes': []
+        }
+        
+        # Carregar mapeamento (enviados)
+        mapeamento = {}
+        arquivos_possiveis = ['mapeamento.json', 'mapeamento_telefone_ids.json', 'agenda_mapeamento.json']
+        
+        for arquivo in arquivos_possiveis:
+            if os.path.exists(arquivo):
+                with open(arquivo, 'r', encoding='utf-8') as f:
+                    mapeamento = json.load(f)
+                break
+        
+        # Carregar confirmações
+        confirmacoes = {}
+        if os.path.exists('confirmacoes.json'):
+            with open('confirmacoes.json', 'r', encoding='utf-8') as f:
+                confirmacoes = json.load(f)
+        
+        # Processar cada telefone
+        for telefone, marcacoes_lista in mapeamento.items():
+            if isinstance(marcacoes_lista, list):
+                for marcacao_info in marcacoes_lista:
+                    id_marcacao = str(marcacao_info.get('id_marcacao', ''))
+                    
+                    # Verificar se foi confirmado
+                    confirmado = id_marcacao in confirmacoes
+                    
+                    paciente_info = {
+                        'id_marcacao': id_marcacao,
+                        'telefone': telefone,
+                        'nome': marcacao_info.get('nome', 'Sem nome'),
+                        'data': marcacao_info.get('data', ''),
+                        'hora': marcacao_info.get('hora', ''),
+                        'medico': marcacao_info.get('medico', ''),
+                        'status': 'confirmado' if confirmado else 'pendente',
+                        'confirmado_em': confirmacoes.get(id_marcacao, {}).get('confirmado_em') if confirmado else None
+                    }
+                    
+                    resultado['pacientes'].append(paciente_info)
+                    resultado['total_enviados'] += 1
+                    
+                    if confirmado:
+                        resultado['total_confirmados'] += 1
+                    else:
+                        resultado['total_pendentes'] += 1
+        
+        # Ordenar: confirmados primeiro, depois por nome
+        resultado['pacientes'].sort(key=lambda x: (x['status'] != 'confirmado', x['nome']))
+        
+        return jsonify(resultado), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar status: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "mensagem": str(e)
         }), 500
 
 @app.route('/health', methods=['GET'])
@@ -454,6 +554,12 @@ def webhook_confirmar():
             if response.status_code in [200, 204]:
                 logger.info(f"✅ Marcação {id_marc_int} confirmada com sucesso!")
                 confirmadas.append(id_marc_int)
+                
+                # Salvar confirmação para monitoramento
+                try:
+                    salvar_confirmacao(id_marc_int, telefone if telefone else str(id_marc_int))
+                except Exception as e:
+                    logger.error(f"Erro ao salvar confirmação: {e}")
             else:
                 logger.error(f"❌ Erro ao confirmar marcação {id_marc_int}: {response.status_code}")
                 erros.append({"id": id_marc_int, "erro": f"Status {response.status_code}"})

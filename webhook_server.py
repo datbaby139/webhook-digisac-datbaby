@@ -4,6 +4,7 @@ Recebe confirmações do Digisac e confirma automaticamente no Visual ASA
 """
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import requests
 from datetime import datetime
 import os
@@ -18,6 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)  # Permitir requisições de qualquer origem
 
 # Configurações da API Visual ASA
 VISUAL_ASA_URL = "http://deskweb2oci.ddns.net:9991"

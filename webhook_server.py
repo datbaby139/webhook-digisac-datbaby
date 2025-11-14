@@ -53,7 +53,16 @@ def buscar_telefone_digisac(contact_id):
         
         if response.status_code == 200:
             data = response.json()
-            telefone = data.get('phone') or data.get('number') or data.get('phoneNumber')
+            
+            # Tentar diferentes campos possíveis
+            telefone = (
+                data.get('phone') or 
+                data.get('number') or 
+                data.get('phoneNumber') or
+                data.get('idFromService') or
+                (data.get('data', {}).get('number') if isinstance(data.get('data'), dict) else None) or
+                (data.get('data', {}).get('validNumber') if isinstance(data.get('data'), dict) else None)
+            )
             
             if telefone:
                 logger.info(f"✅ Telefone encontrado: {telefone}")

@@ -242,7 +242,7 @@ def testar():
 def status_confirmacoes():
     """
     Retorna o status de todas as confirmações
-    Combina dados do mapeamento (enviados) e confirmações (confirmados)
+    BUSCA DIRETO DO VISUAL ASA para garantir dados atualizados
     """
     try:
         resultado = {
@@ -262,20 +262,55 @@ def status_confirmacoes():
                     mapeamento = json.load(f)
                 break
         
-        # Carregar confirmações
-        confirmacoes = {}
-        if os.path.exists('confirmacoes.json'):
-            with open('confirmacoes.json', 'r', encoding='utf-8') as f:
-                confirmacoes = json.load(f)
+        # Se não tem mapeamento, retorna vazio
+        if not mapeamento:
+            return jsonify(resultado), 200
         
-        # Processar cada telefone
+        # Coletar todos os IDs de marcação
+        ids_marcacao = []
+        for telefone, marcacoes_lista in mapeamento.items():
+            if isinstance(marcacoes_lista, list):
+                for marcacao_info in marcacoes_lista:
+                    id_marcacao = str(marcacao_info.get('id_marcacao', ''))
+                    if id_marcacao:
+                        ids_marcacao.append(id_marcacao)
+        
+        logger.info(f"📋 Buscando status de {len(ids_marcacao)} marcações no ASA...")
+        
+        # Buscar status real de cada marcação no Visual ASA
+        marcacoes_asa = {}
+        for id_marc in ids_marcacao:
+            try:
+                response = requests.get(
+                    f"{VISUAL_ASA_URL}/marcacao/{id_marc}",
+                    headers=headers,
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    dados = response.json()
+                    # Verificar se está confirmada no ASA
+                    confirmada = dados.get('confirmada', False) or dados.get('status', '') == 'confirmada'
+                    marcacoes_asa[id_marc] = {
+                        'confirmada': confirmada,
+                        'dados': dados
+                    }
+                    
+            except Exception as e:
+                logger.warning(f"⚠️  Erro ao buscar marcação {id_marc}: {e}")
+                marcacoes_asa[id_marc] = {
+                    'confirmada': False,
+                    'dados': {}
+                }
+        
+        # Processar cada telefone com dados do ASA
         for telefone, marcacoes_lista in mapeamento.items():
             if isinstance(marcacoes_lista, list):
                 for marcacao_info in marcacoes_lista:
                     id_marcacao = str(marcacao_info.get('id_marcacao', ''))
                     
-                    # Verificar se foi confirmado
-                    confirmado = id_marcacao in confirmacoes
+                    # Verificar status real no ASA
+                    confirmado = marcacoes_asa.get(id_marcacao, {}).get('confirmada', False)
                     
                     paciente_info = {
                         'id_marcacao': id_marcacao,
@@ -285,7 +320,7 @@ def status_confirmacoes():
                         'hora': marcacao_info.get('hora', ''),
                         'medico': marcacao_info.get('medico', ''),
                         'status': 'confirmado' if confirmado else 'pendente',
-                        'confirmado_em': confirmacoes.get(id_marcacao, {}).get('confirmado_em') if confirmado else None
+                        'confirmado_em': None  # ASA não fornece timestamp
                     }
                     
                     resultado['pacientes'].append(paciente_info)
@@ -298,6 +333,8 @@ def status_confirmacoes():
         
         # Ordenar: confirmados primeiro, depois por nome
         resultado['pacientes'].sort(key=lambda x: (x['status'] != 'confirmado', x['nome']))
+        
+        logger.info(f"✅ Status: {resultado['total_confirmados']}/{resultado['total_enviados']} confirmados")
         
         return jsonify(resultado), 200
         

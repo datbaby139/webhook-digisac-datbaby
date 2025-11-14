@@ -410,6 +410,183 @@ def upload_mapeamento():
             "timestamp": datetime.now().isoformat()
         }), 500
 
+@app.route('/webhook/agenda-medico', methods=['GET'])
+def agenda_medico():
+    """
+    Busca agenda completa de um médico diretamente do Visual ASA
+    Parâmetros: medico, data_inicio, data_fim
+    """
+    try:
+        nome_medico = request.args.get('medico')
+        data_inicio = request.args.get('data_inicio')  # YYYY-MM-DD
+        data_fim = request.args.get('data_fim')  # YYYY-MM-DD
+        
+        if not nome_medico:
+            return jsonify({
+                "status": "error",
+                "mensagem": "Nome do médico é obrigatório"
+            }), 400
+        
+        # Se não informou datas, buscar semana atual
+        if not data_inicio or not data_fim:
+            hoje = datetime.now()
+            # Início da semana (domingo)
+            inicio_semana = hoje - timedelta(days=hoje.weekday() + 1)
+            # Fim da semana (sábado)
+            fim_semana = inicio_semana + timedelta(days=6)
+            
+            data_inicio = inicio_semana.strftime("%Y-%m-%d")
+            data_fim = fim_semana.strftime("%Y-%m-%d")
+        
+        logger.info(f"📅 Buscando agenda de '{nome_medico}' de {data_inicio} até {data_fim}")
+        
+        # Buscar marcações de cada dia
+        data_atual = datetime.strptime(data_inicio, "%Y-%m-%d")
+        data_final = datetime.strptime(data_fim, "%Y-%m-%d")
+        
+        todas_consultas = []
+        
+        while data_atual <= data_final:
+            data_str = data_atual.strftime("%Y-%m-%d")
+            
+            try:
+                response = requests.get(
+                    f"{VISUAL_ASA_URL}/marcacao",
+                    headers=headers,
+                    params={"data": data_str},
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    marcacoes = response.json()
+                    
+                    # Filtrar por médico
+                    for m in marcacoes:
+                        medico_info = m.get('medico', {})
+                        medico_nome = medico_info.get('medicoDescricao', '') if medico_info else ''
+                        
+                        # Comparar nome (case insensitive)
+                        if medico_nome.lower().strip() == nome_medico.lower().strip():
+                            # Extrair informações
+                            paciente_nome = m.get('paciente', 'Sem nome')
+                            
+                            # Telefones
+                            telefones = m.get('telefones', [])
+                            telefone = ''
+                            if telefones and len(telefones) > 0:
+                                telefone = telefones[0].get('telefone', '')
+                            
+                            # Data e hora
+                            data_marcada = m.get('dataMarcada', '')
+                            hora = ''
+                            if data_marcada:
+                                try:
+                                    dt = datetime.fromisoformat(data_marcada.replace('Z', '+00:00'))
+                                    hora = dt.strftime('%H:%M')
+                                except:
+                                    hora = ''
+                            
+                            # Status de confirmação
+                            confirmada = m.get('confirmada', False)
+                            
+                            # Especialidade
+                            especialidade_info = m.get('especialidade', {})
+                            especialidade = especialidade_info.get('nome', '') if especialidade_info else ''
+                            
+                            consulta = {
+                                'id_marcacao': str(m.get('idMarcacao', '')),
+                                'paciente': paciente_nome,
+                                'telefone': telefone,
+                                'data': data_atual.strftime('%d/%m/%Y'),
+                                'hora': hora,
+                                'medico': medico_nome,
+                                'especialidade': especialidade,
+                                'confirmada': confirmada,
+                                'status': 'confirmado' if confirmada else 'pendente'
+                            }
+                            
+                            todas_consultas.append(consulta)
+                
+            except Exception as e:
+                logger.warning(f"⚠️  Erro ao buscar {data_str}: {e}")
+            
+            # Próximo dia
+            data_atual += timedelta(days=1)
+        
+        # Ordenar por data e hora
+        todas_consultas.sort(key=lambda x: (x['data'], x['hora']))
+        
+        logger.info(f"✅ Encontradas {len(todas_consultas)} consultas")
+        
+        return jsonify({
+            'medico': nome_medico,
+            'periodo': {
+                'inicio': data_inicio,
+                'fim': data_fim
+            },
+            'total_consultas': len(todas_consultas),
+            'consultas': todas_consultas
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar agenda: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "mensagem": str(e)
+        }), 500
+
+@app.route('/webhook/listar-medicos', methods=['GET'])
+def listar_medicos():
+    """
+    Lista todos os médicos que têm consultas nos próximos dias
+    """
+    try:
+        # Buscar próximos 30 dias
+        hoje = datetime.now()
+        data_fim = hoje + timedelta(days=30)
+        
+        medicos_set = set()
+        
+        data_atual = hoje
+        while data_atual <= data_fim:
+            data_str = data_atual.strftime("%Y-%m-%d")
+            
+            try:
+                response = requests.get(
+                    f"{VISUAL_ASA_URL}/marcacao",
+                    headers=headers,
+                    params={"data": data_str},
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    marcacoes = response.json()
+                    
+                    for m in marcacoes:
+                        medico_info = m.get('medico', {})
+                        if medico_info:
+                            medico_nome = medico_info.get('medicoDescricao', '')
+                            if medico_nome:
+                                medicos_set.add(medico_nome)
+            except:
+                pass
+            
+            data_atual += timedelta(days=1)
+        
+        medicos_lista = sorted(list(medicos_set))
+        
+        return jsonify({
+            'total': len(medicos_lista),
+            'medicos': medicos_lista
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao listar médicos: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "mensagem": str(e)
+        }), 500
+
 @app.route('/webhook/confirmar', methods=['POST'])
 def webhook_confirmar():
     """

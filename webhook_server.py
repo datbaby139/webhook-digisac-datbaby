@@ -8,6 +8,7 @@ import requests
 from datetime import datetime
 import os
 import logging
+import json
 
 # Configurar logging
 logging.basicConfig(

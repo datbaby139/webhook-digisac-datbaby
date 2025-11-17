@@ -29,6 +29,8 @@ try:
     import psycopg2
     from psycopg2.extras import RealDictCursor
     
+    logger.info("✅ psycopg2 importado com sucesso")
+    
     # Verificar se tem DATABASE_URL configurada
     DATABASE_URL = os.getenv('DATABASE_URL')
     
@@ -42,8 +44,12 @@ try:
     else:
         logger.info("ℹ️  DATABASE_URL não configurada - usando modo JSON")
         
-except ImportError:
+except ImportError as e:
+    logger.error(f"❌ Erro ao importar psycopg2: {e}")
     logger.info("ℹ️  psycopg2 não instalado - usando modo JSON")
+except Exception as e:
+    logger.error(f"❌ Erro inesperado ao configurar PostgreSQL: {e}")
+    logger.info("ℹ️  Usando modo JSON")
 
 # ===== FIM CONFIGURAÇÃO POSTGRESQL =====
 

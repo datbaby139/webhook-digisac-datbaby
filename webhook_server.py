@@ -11,15 +11,213 @@ import os
 import logging
 import json
 
-# Configurar logging
+# Configurar logging PRIMEIRO
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# ===== CONFIGURAÇÃO POSTGRESQL =====
+# IMPORTANTE: Sistema funciona SEM banco! Banco é OPCIONAL.
+# Para ativar: definir variável de ambiente DATABASE_URL
+
+USE_DATABASE = False  # Flag de controle
+db_conn = None
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    
+    # Verificar se tem DATABASE_URL configurada
+    DATABASE_URL = os.getenv('DATABASE_URL')
+    
+    if DATABASE_URL:
+        # Ajustar URL se vier do Render (postgres:// → postgresql://)
+        if DATABASE_URL.startswith('postgres://'):
+            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+        
+        USE_DATABASE = True
+        logger.info("✅ PostgreSQL disponível - banco será usado quando ativado")
+    else:
+        logger.info("ℹ️  DATABASE_URL não configurada - usando modo JSON")
+        
+except ImportError:
+    logger.info("ℹ️  psycopg2 não instalado - usando modo JSON")
+
+# ===== FIM CONFIGURAÇÃO POSTGRESQL =====
+
 app = Flask(__name__)
 CORS(app)  # Permitir requisições de qualquer origem
+
+# ===== FUNÇÕES DO BANCO DE DADOS (DESATIVADAS POR PADRÃO) =====
+
+def get_db_connection():
+    """Conecta ao banco PostgreSQL. Retorna None se não configurado."""
+    if not USE_DATABASE:
+        return None
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    except Exception as e:
+        logger.error(f"❌ Erro ao conectar ao banco: {e}")
+        return None
+
+def init_database():
+    """Cria tabelas se não existirem. Executado automaticamente se banco disponível."""
+    if not USE_DATABASE:
+        return False
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS confirmacoes (
+                id SERIAL PRIMARY KEY,
+                id_marcacao TEXT NOT NULL UNIQUE,
+                telefone TEXT,
+                nome_paciente TEXT,
+                data_consulta DATE,
+                hora TIME,
+                medico TEXT,
+                confirmado BOOLEAN DEFAULT FALSE,
+                confirmado_em TIMESTAMP,
+                criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_confirmacoes_data ON confirmacoes(data_consulta);
+            CREATE INDEX IF NOT EXISTS idx_confirmacoes_medico ON confirmacoes(medico);
+            CREATE INDEX IF NOT EXISTS idx_confirmacoes_confirmado ON confirmacoes(confirmado);
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("✅ Banco de dados inicializado")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao inicializar banco: {e}")
+        return False
+
+def salvar_marcacoes_banco(marcacoes_lista):
+    """Salva lista de marcações no banco. Retorna False se banco não disponível."""
+    if not USE_DATABASE:
+        return False
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        cur = conn.cursor()
+        for m in marcacoes_lista:
+            data_str = m.get('data', '')
+            if data_str:
+                try:
+                    dia, mes, ano = data_str.split('/')
+                    data_sql = f"{ano}-{mes}-{dia}"
+                except:
+                    data_sql = None
+            else:
+                data_sql = None
+            cur.execute("""
+                INSERT INTO confirmacoes 
+                (id_marcacao, telefone, nome_paciente, data_consulta, hora, medico, confirmado)
+                VALUES (%s, %s, %s, %s, %s, %s, FALSE)
+                ON CONFLICT (id_marcacao) 
+                DO UPDATE SET
+                    telefone = EXCLUDED.telefone,
+                    nome_paciente = EXCLUDED.nome_paciente,
+                    data_consulta = EXCLUDED.data_consulta,
+                    hora = EXCLUDED.hora,
+                    medico = EXCLUDED.medico,
+                    atualizado_em = CURRENT_TIMESTAMP
+            """, (m.get('id_marcacao'), m.get('telefone'), m.get('nome'), data_sql, m.get('hora'), m.get('medico')))
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"✅ {len(marcacoes_lista)} marcações salvas no banco")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao salvar no banco: {e}")
+        return False
+
+def marcar_confirmado_banco(id_marcacao):
+    """Marca marcação como confirmada no banco."""
+    if not USE_DATABASE:
+        return False
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE confirmacoes 
+            SET confirmado = TRUE,
+                confirmado_em = CURRENT_TIMESTAMP,
+                atualizado_em = CURRENT_TIMESTAMP
+            WHERE id_marcacao = %s
+        """, (str(id_marcacao),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"✅ Marcação {id_marcacao} confirmada no banco")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao confirmar no banco: {e}")
+        return False
+
+def buscar_status_banco(data_filtro=None):
+    """Busca status das marcações no banco. Retorna formato compatível com JSON."""
+    if not USE_DATABASE:
+        return None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if data_filtro:
+            cur.execute("""
+                SELECT 
+                    id_marcacao,
+                    telefone,
+                    nome_paciente as nome,
+                    TO_CHAR(data_consulta, 'DD/MM/YYYY') as data,
+                    TO_CHAR(hora, 'HH24:MI') as hora,
+                    medico,
+                    CASE WHEN confirmado THEN 'confirmado' ELSE 'pendente' END as status,
+                    confirmado_em
+                FROM confirmacoes
+                WHERE data_consulta = %s
+                ORDER BY confirmado DESC, nome_paciente
+            """, (data_filtro,))
+        else:
+            cur.execute("""
+                SELECT 
+                    id_marcacao,
+                    telefone,
+                    nome_paciente as nome,
+                    TO_CHAR(data_consulta, 'DD/MM/YYYY') as data,
+                    TO_CHAR(hora, 'HH24:MI') as hora,
+                    medico,
+                    CASE WHEN confirmado THEN 'confirmado' ELSE 'pendente' END as status,
+                    confirmado_em
+                FROM confirmacoes
+                ORDER BY data_consulta DESC, confirmado DESC, nome_paciente
+                LIMIT 1000
+            """)
+        resultados = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [dict(row) for row in resultados]
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar do banco: {e}")
+        return None
+
+# Inicializar banco se disponível
+if USE_DATABASE:
+    logger.info("🔄 Inicializando banco de dados...")
+    init_database()
+
+# ===== FIM FUNÇÕES DO BANCO =====
 
 # Configurações da API Visual ASA
 VISUAL_ASA_URL = "http://deskweb2oci.ddns.net:9991"

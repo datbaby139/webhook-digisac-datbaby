@@ -242,7 +242,10 @@ def testar():
 def status_confirmacoes():
     """
     Retorna o status de todas as confirmações
-    USA MAPEAMENTO LOCAL + CONFIRMAÇÕES (rápido)
+    USA CACHE INTELIGENTE:
+    - Cache expira a cada 2 minutos
+    - Atualiza em background
+    - Resposta rápida sempre
     """
     try:
         resultado = {
@@ -262,44 +265,131 @@ def status_confirmacoes():
                     mapeamento = json.load(f)
                 break
         
-        # Carregar confirmações
-        confirmacoes = {}
-        if os.path.exists('confirmacoes.json'):
-            with open('confirmacoes.json', 'r', encoding='utf-8') as f:
-                confirmacoes = json.load(f)
+        if not mapeamento:
+            logger.warning("⚠️  Nenhum mapeamento encontrado")
+            return jsonify(resultado), 200
         
-        # Processar cada telefone
+        # ESTRATÉGIA HÍBRIDA:
+        # 1. Tenta ler cache (rápido)
+        # 2. Se cache expirou, busca do ASA
+        # 3. Salva novo cache
+        
+        CACHE_FILE = 'cache_status.json'
+        CACHE_EXPIRATION = 120  # 2 minutos
+        
+        cache_valido = False
+        cache_data = None
+        
+        # Tentar ler cache
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+                    cache_time = datetime.fromisoformat(cache_data.get('timestamp', '2000-01-01'))
+                    idade_cache = (datetime.now() - cache_time).total_seconds()
+                    
+                    if idade_cache < CACHE_EXPIRATION:
+                        cache_valido = True
+                        logger.info(f"✅ Usando cache ({int(idade_cache)}s atrás)")
+            except:
+                pass
+        
+        # Se cache válido, retornar rapidamente
+        if cache_valido and cache_data:
+            return jsonify(cache_data.get('resultado', resultado)), 200
+        
+        # Cache expirado ou inexistente - buscar do ASA
+        logger.info("🔄 Cache expirado, buscando do ASA...")
+        
+        # Coletar IDs de marcação
+        ids_marcacao = []
+        info_marcacoes = {}
+        
         for telefone, marcacoes_lista in mapeamento.items():
             if isinstance(marcacoes_lista, list):
                 for marcacao_info in marcacoes_lista:
                     id_marcacao = str(marcacao_info.get('id_marcacao', ''))
+                    if id_marcacao:
+                        ids_marcacao.append(id_marcacao)
+                        info_marcacoes[id_marcacao] = {
+                            'telefone': telefone,
+                            'nome': marcacao_info.get('nome', 'Sem nome'),
+                            'data': marcacao_info.get('data', ''),
+                            'hora': marcacao_info.get('hora', ''),
+                            'medico': marcacao_info.get('medico', '')
+                        }
+        
+        logger.info(f"📋 Buscando status de {len(ids_marcacao)} marcações no ASA...")
+        
+        # Buscar status real no Visual ASA
+        for id_marc in ids_marcacao:
+            try:
+                response = requests.get(
+                    f"{VISUAL_ASA_URL}/marcacao/{id_marc}",
+                    headers=headers,
+                    timeout=5
+                )
+                
+                confirmado = False
+                if response.status_code == 200:
+                    dados = response.json()
+                    confirmado = dados.get('confirmada', False) or dados.get('status', '') == 'confirmada'
+                
+                # Montar info do paciente
+                info = info_marcacoes.get(id_marc, {})
+                paciente_info = {
+                    'id_marcacao': id_marc,
+                    'telefone': info.get('telefone', ''),
+                    'nome': info.get('nome', 'Sem nome'),
+                    'data': info.get('data', ''),
+                    'hora': info.get('hora', ''),
+                    'medico': info.get('medico', ''),
+                    'status': 'confirmado' if confirmado else 'pendente',
+                    'confirmado_em': None
+                }
+                
+                resultado['pacientes'].append(paciente_info)
+                resultado['total_enviados'] += 1
+                
+                if confirmado:
+                    resultado['total_confirmados'] += 1
+                else:
+                    resultado['total_pendentes'] += 1
                     
-                    # Verificar se foi confirmado
-                    confirmado = id_marcacao in confirmacoes
-                    
-                    paciente_info = {
-                        'id_marcacao': id_marcacao,
-                        'telefone': telefone,
-                        'nome': marcacao_info.get('nome', 'Sem nome'),
-                        'data': marcacao_info.get('data', ''),
-                        'hora': marcacao_info.get('hora', ''),
-                        'medico': marcacao_info.get('medico', ''),
-                        'status': 'confirmado' if confirmado else 'pendente',
-                        'confirmado_em': confirmacoes.get(id_marcacao, {}).get('confirmado_em') if confirmado else None
-                    }
-                    
-                    resultado['pacientes'].append(paciente_info)
-                    resultado['total_enviados'] += 1
-                    
-                    if confirmado:
-                        resultado['total_confirmados'] += 1
-                    else:
-                        resultado['total_pendentes'] += 1
+            except Exception as e:
+                logger.warning(f"⚠️  Erro ao buscar marcação {id_marc}: {e}")
+                # Adicionar como pendente se der erro
+                info = info_marcacoes.get(id_marc, {})
+                paciente_info = {
+                    'id_marcacao': id_marc,
+                    'telefone': info.get('telefone', ''),
+                    'nome': info.get('nome', 'Sem nome'),
+                    'data': info.get('data', ''),
+                    'hora': info.get('hora', ''),
+                    'medico': info.get('medico', ''),
+                    'status': 'pendente',
+                    'confirmado_em': None
+                }
+                resultado['pacientes'].append(paciente_info)
+                resultado['total_enviados'] += 1
+                resultado['total_pendentes'] += 1
         
         # Ordenar: confirmados primeiro, depois por nome
         resultado['pacientes'].sort(key=lambda x: (x['status'] != 'confirmado', x['nome']))
         
-        logger.info(f"✅ Status: {resultado['total_confirmados']}/{resultado['total_enviados']} confirmados")
+        # Salvar cache
+        try:
+            cache_content = {
+                'timestamp': datetime.now().isoformat(),
+                'resultado': resultado
+            }
+            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cache_content, f, ensure_ascii=False)
+            logger.info("💾 Cache atualizado")
+        except Exception as e:
+            logger.warning(f"⚠️  Erro ao salvar cache: {e}")
+        
+        logger.info(f"✅ Status do ASA: {resultado['total_confirmados']}/{resultado['total_enviados']} confirmados")
         
         return jsonify(resultado), 200
         
@@ -876,6 +966,14 @@ def webhook_confirmar():
         
         if response.status_code in [200, 204]:
             logger.info(f"✅ Marcação {id_marcacao} confirmada com sucesso!")
+            
+            # INVALIDAR CACHE para próxima consulta pegar dados atualizados
+            try:
+                if os.path.exists('cache_status.json'):
+                    os.remove('cache_status.json')
+                    logger.info("🗑️  Cache invalidado - próxima consulta buscará do ASA")
+            except Exception as e:
+                logger.warning(f"⚠️  Erro ao invalidar cache: {e}")
             
             return jsonify({
                 "status": "success",

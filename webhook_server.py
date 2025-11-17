@@ -242,7 +242,7 @@ def testar():
 def status_confirmacoes():
     """
     Retorna o status de todas as confirmações
-    BUSCA DIRETO DO VISUAL ASA para garantir dados atualizados
+    USA MAPEAMENTO LOCAL + CONFIRMAÇÕES (rápido)
     """
     try:
         resultado = {
@@ -262,55 +262,20 @@ def status_confirmacoes():
                     mapeamento = json.load(f)
                 break
         
-        # Se não tem mapeamento, retorna vazio
-        if not mapeamento:
-            return jsonify(resultado), 200
+        # Carregar confirmações
+        confirmacoes = {}
+        if os.path.exists('confirmacoes.json'):
+            with open('confirmacoes.json', 'r', encoding='utf-8') as f:
+                confirmacoes = json.load(f)
         
-        # Coletar todos os IDs de marcação
-        ids_marcacao = []
-        for telefone, marcacoes_lista in mapeamento.items():
-            if isinstance(marcacoes_lista, list):
-                for marcacao_info in marcacoes_lista:
-                    id_marcacao = str(marcacao_info.get('id_marcacao', ''))
-                    if id_marcacao:
-                        ids_marcacao.append(id_marcacao)
-        
-        logger.info(f"📋 Buscando status de {len(ids_marcacao)} marcações no ASA...")
-        
-        # Buscar status real de cada marcação no Visual ASA
-        marcacoes_asa = {}
-        for id_marc in ids_marcacao:
-            try:
-                response = requests.get(
-                    f"{VISUAL_ASA_URL}/marcacao/{id_marc}",
-                    headers=headers,
-                    timeout=5
-                )
-                
-                if response.status_code == 200:
-                    dados = response.json()
-                    # Verificar se está confirmada no ASA
-                    confirmada = dados.get('confirmada', False) or dados.get('status', '') == 'confirmada'
-                    marcacoes_asa[id_marc] = {
-                        'confirmada': confirmada,
-                        'dados': dados
-                    }
-                    
-            except Exception as e:
-                logger.warning(f"⚠️  Erro ao buscar marcação {id_marc}: {e}")
-                marcacoes_asa[id_marc] = {
-                    'confirmada': False,
-                    'dados': {}
-                }
-        
-        # Processar cada telefone com dados do ASA
+        # Processar cada telefone
         for telefone, marcacoes_lista in mapeamento.items():
             if isinstance(marcacoes_lista, list):
                 for marcacao_info in marcacoes_lista:
                     id_marcacao = str(marcacao_info.get('id_marcacao', ''))
                     
-                    # Verificar status real no ASA
-                    confirmado = marcacoes_asa.get(id_marcacao, {}).get('confirmada', False)
+                    # Verificar se foi confirmado
+                    confirmado = id_marcacao in confirmacoes
                     
                     paciente_info = {
                         'id_marcacao': id_marcacao,
@@ -320,7 +285,7 @@ def status_confirmacoes():
                         'hora': marcacao_info.get('hora', ''),
                         'medico': marcacao_info.get('medico', ''),
                         'status': 'confirmado' if confirmado else 'pendente',
-                        'confirmado_em': None  # ASA não fornece timestamp
+                        'confirmado_em': confirmacoes.get(id_marcacao, {}).get('confirmado_em') if confirmado else None
                     }
                     
                     resultado['pacientes'].append(paciente_info)
@@ -415,6 +380,7 @@ def agenda_medico():
     """
     Busca agenda completa de um médico diretamente do Visual ASA
     Parâmetros: medico, data_inicio, data_fim
+    OTIMIZADO: Máximo 7 dias por vez
     """
     try:
         nome_medico = request.args.get('medico')
@@ -438,11 +404,22 @@ def agenda_medico():
             data_inicio = inicio_semana.strftime("%Y-%m-%d")
             data_fim = fim_semana.strftime("%Y-%m-%d")
         
+        # PROTEÇÃO: Máximo 7 dias
+        data_inicio_obj = datetime.strptime(data_inicio, "%Y-%m-%d")
+        data_fim_obj = datetime.strptime(data_fim, "%Y-%m-%d")
+        
+        diferenca = (data_fim_obj - data_inicio_obj).days
+        if diferenca > 7:
+            return jsonify({
+                "status": "error",
+                "mensagem": "Período máximo: 7 dias"
+            }), 400
+        
         logger.info(f"📅 Buscando agenda de '{nome_medico}' de {data_inicio} até {data_fim}")
         
         # Buscar marcações de cada dia
-        data_atual = datetime.strptime(data_inicio, "%Y-%m-%d")
-        data_final = datetime.strptime(data_fim, "%Y-%m-%d")
+        data_atual = data_inicio_obj
+        data_final = data_fim_obj
         
         todas_consultas = []
         
@@ -538,12 +515,13 @@ def agenda_medico():
 @app.route('/webhook/listar-medicos', methods=['GET'])
 def listar_medicos():
     """
-    Lista todos os médicos que têm consultas nos próximos dias
+    Lista todos os médicos que têm consultas nos próximos 7 dias
+    OTIMIZADO: Apenas 7 dias para evitar timeout
     """
     try:
-        # Buscar próximos 30 dias
+        # Buscar próximos 7 dias (não 30)
         hoje = datetime.now()
-        data_fim = hoje + timedelta(days=30)
+        data_fim = hoje + timedelta(days=7)
         
         medicos_set = set()
         
@@ -574,6 +552,8 @@ def listar_medicos():
             data_atual += timedelta(days=1)
         
         medicos_lista = sorted(list(medicos_set))
+        
+        logger.info(f"✅ Encontrados {len(medicos_lista)} médicos")
         
         return jsonify({
             'total': len(medicos_lista),

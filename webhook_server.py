@@ -651,6 +651,34 @@ def upload_mapeamento():
         
         logger.info(f"✅ Mapeamento atualizado: {total_telefones} telefones, {total_marcacoes} marcações")
         
+        # SALVAR NO BANCO DE DADOS (se disponível)
+        if USE_DATABASE:
+            try:
+                # Preparar lista de marcações para o banco
+                marcacoes_para_banco = []
+                
+                for telefone, marcacoes_lista in data.items():
+                    if isinstance(marcacoes_lista, list):
+                        for marcacao in marcacoes_lista:
+                            marcacoes_para_banco.append({
+                                'id_marcacao': marcacao.get('id_marcacao'),
+                                'telefone': telefone,
+                                'nome': marcacao.get('nome'),
+                                'data': marcacao.get('data'),
+                                'hora': marcacao.get('hora'),
+                                'medico': marcacao.get('medico')
+                            })
+                
+                # Salvar no banco
+                if salvar_marcacoes_banco(marcacoes_para_banco):
+                    logger.info(f"✅ {len(marcacoes_para_banco)} marcações salvas no banco")
+                else:
+                    logger.warning("⚠️  Falha ao salvar no banco, usando apenas JSON")
+                    
+            except Exception as e:
+                logger.error(f"❌ Erro ao salvar no banco: {e}")
+                logger.info("⚠️  Continuando com JSON apenas")
+        
         return jsonify({
             "status": "success",
             "mensagem": "Mapeamento atualizado com sucesso!",

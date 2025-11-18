@@ -78,28 +78,60 @@ def init_database():
         if not conn:
             return False
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS confirmacoes (
-                id SERIAL PRIMARY KEY,
-                id_marcacao TEXT NOT NULL UNIQUE,
-                telefone TEXT,
-                nome_paciente TEXT,
-                data_consulta DATE,
-                hora TIME,
-                medico TEXT,
-                confirmado BOOLEAN DEFAULT FALSE,
-                confirmado_em TIMESTAMP,
-                criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_confirmacoes_data ON confirmacoes(data_consulta);
-            CREATE INDEX IF NOT EXISTS idx_confirmacoes_medico ON confirmacoes(medico);
-            CREATE INDEX IF NOT EXISTS idx_confirmacoes_confirmado ON confirmacoes(confirmado);
-        """)
-        conn.commit()
+        
+        # Tentar criar no schema public primeiro
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS public.confirmacoes (
+                    id SERIAL PRIMARY KEY,
+                    id_marcacao TEXT NOT NULL UNIQUE,
+                    telefone TEXT,
+                    nome_paciente TEXT,
+                    data_consulta DATE,
+                    hora TIME,
+                    medico TEXT,
+                    confirmado BOOLEAN DEFAULT FALSE,
+                    confirmado_em TIMESTAMP,
+                    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_confirmacoes_data ON public.confirmacoes(data_consulta);
+                CREATE INDEX IF NOT EXISTS idx_confirmacoes_medico ON public.confirmacoes(medico);
+                CREATE INDEX IF NOT EXISTS idx_confirmacoes_confirmado ON public.confirmacoes(confirmado);
+            """)
+            conn.commit()
+            logger.info("✅ Banco de dados inicializado no schema public")
+        except Exception as e:
+            logger.warning(f"⚠️  Não foi possível criar no schema public: {e}")
+            logger.info("🔄 Tentando criar sem especificar schema...")
+            
+            # Rollback da transação com erro
+            conn.rollback()
+            
+            # Tentar sem especificar schema (cria no schema do usuário)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS confirmacoes (
+                    id SERIAL PRIMARY KEY,
+                    id_marcacao TEXT NOT NULL UNIQUE,
+                    telefone TEXT,
+                    nome_paciente TEXT,
+                    data_consulta DATE,
+                    hora TIME,
+                    medico TEXT,
+                    confirmado BOOLEAN DEFAULT FALSE,
+                    confirmado_em TIMESTAMP,
+                    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_confirmacoes_data ON confirmacoes(data_consulta);
+                CREATE INDEX IF NOT EXISTS idx_confirmacoes_medico ON confirmacoes(medico);
+                CREATE INDEX IF NOT EXISTS idx_confirmacoes_confirmado ON confirmacoes(confirmado);
+            """)
+            conn.commit()
+            logger.info("✅ Banco de dados inicializado no schema do usuário")
+        
         cur.close()
         conn.close()
-        logger.info("✅ Banco de dados inicializado")
         return True
     except Exception as e:
         logger.error(f"❌ Erro ao inicializar banco: {e}")

@@ -478,10 +478,7 @@ def testar():
 def status_confirmacoes():
     """
     Retorna o status de todas as confirmações
-    USA CACHE INTELIGENTE:
-    - Cache expira a cada 2 minutos
-    - Atualiza em background
-    - Resposta rápida sempre
+    PRIORIDADE: BANCO > CACHE > ASA
     """
     try:
         resultado = {
@@ -491,7 +488,28 @@ def status_confirmacoes():
             'pacientes': []
         }
         
-        # Carregar mapeamento (enviados)
+        # PRIORIDADE 1: BUSCAR DO BANCO (se disponível)
+        if USE_DATABASE:
+            logger.info("📊 Buscando status do BANCO...")
+            dados_banco = buscar_status_banco()
+            
+            if dados_banco:
+                # Converter para formato esperado
+                for registro in dados_banco:
+                    resultado['pacientes'].append(registro)
+                    resultado['total_enviados'] += 1
+                    
+                    if registro.get('status') == 'confirmado':
+                        resultado['total_confirmados'] += 1
+                    else:
+                        resultado['total_pendentes'] += 1
+                
+                logger.info(f"✅ Status do BANCO: {resultado['total_confirmados']}/{resultado['total_enviados']} confirmados")
+                return jsonify(resultado), 200
+            else:
+                logger.warning("⚠️  Falha ao buscar do banco, tentando fallback...")
+        
+        # FALLBACK: Carregar mapeamento (enviados)
         mapeamento = {}
         arquivos_possiveis = ['mapeamento.json', 'mapeamento_telefone_ids.json', 'agenda_mapeamento.json']
         
@@ -505,13 +523,13 @@ def status_confirmacoes():
             logger.warning("⚠️  Nenhum mapeamento encontrado")
             return jsonify(resultado), 200
         
-        # ESTRATÉGIA HÍBRIDA:
+        # ESTRATÉGIA COM CACHE:
         # 1. Tenta ler cache (rápido)
-        # 2. Se cache expirou, busca do ASA
+        # 2. Se cache expirou, busca do ASA (limitado)
         # 3. Salva novo cache
         
         CACHE_FILE = 'cache_status.json'
-        CACHE_EXPIRATION = 120  # 2 minutos
+        CACHE_EXPIRATION = 300  # 5 minutos (aumentado)
         
         cache_valido = False
         cache_data = None

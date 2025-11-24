@@ -53,6 +53,19 @@ except Exception as e:
 
 # ===== FIM CONFIGURAÇÃO POSTGRESQL =====
 
+# ===== FUNÇÃO AUXILIAR PARA NORMALIZAR TELEFONES =====
+def normalizar_telefone(telefone):
+    """
+    Remove hífens, espaços e caracteres especiais do telefone.
+    Necessário porque:
+    - CSV envia: 55-21-99083-0202 (com hífens)
+    - Digisac retorna: 5521990830202 (sem hífens)
+    """
+    if not telefone:
+        return ""
+    # Remove tudo que não é número
+    return ''.join(filter(str.isdigit, str(telefone)))
+
 app = Flask(__name__)
 CORS(app)  # Permitir requisições de qualquer origem
 
@@ -318,9 +331,17 @@ def buscar_telefone_digisac(contact_id):
 
 def salvar_confirmacao(id_marcacao, telefone):
     """
-    Salva a confirmação para monitoramento
+    Salva a confirmação para monitoramento (JSON + BANCO)
     """
     try:
+        # PRIORIDADE 1: SALVAR NO BANCO
+        if USE_DATABASE:
+            if marcar_confirmado_banco(id_marcacao):
+                logger.info(f"✅ Confirmação salva no BANCO: {id_marcacao}")
+            else:
+                logger.warning(f"⚠️  Falha ao salvar no banco, salvando apenas em JSON")
+        
+        # SEMPRE salvar no JSON também (backup)
         arquivo_confirmacoes = 'confirmacoes.json'
         
         # Carregar confirmações existentes
@@ -341,7 +362,15 @@ def salvar_confirmacao(id_marcacao, telefone):
         with open(arquivo_confirmacoes, 'w', encoding='utf-8') as f:
             json.dump(confirmacoes, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"💾 Confirmação salva: {id_marcacao}")
+        logger.info(f"💾 Confirmação salva no JSON: {id_marcacao}")
+        
+        # Invalidar cache para forçar atualização
+        try:
+            if os.path.exists('cache_status.json'):
+                os.remove('cache_status.json')
+                logger.info("🗑️  Cache invalidado")
+        except:
+            pass
         
     except Exception as e:
         logger.error(f"Erro ao salvar confirmação: {e}")
@@ -479,6 +508,9 @@ def status_confirmacoes():
     """
     Retorna o status de todas as confirmações
     PRIORIDADE: BANCO > CACHE > ASA
+    
+    Parâmetros opcionais:
+    - data: DD/MM/YYYY (filtra por data específica)
     """
     try:
         resultado = {
@@ -488,10 +520,24 @@ def status_confirmacoes():
             'pacientes': []
         }
         
+        # Pegar parâmetro de data (se houver)
+        data_filtro = request.args.get('data')  # Formato: DD/MM/YYYY
+        data_sql = None
+        
+        if data_filtro:
+            try:
+                # Converter DD/MM/YYYY para YYYY-MM-DD
+                dia, mes, ano = data_filtro.split('/')
+                data_sql = f"{ano}-{mes}-{dia}"
+                logger.info(f"📅 Filtro de data: {data_filtro} ({data_sql})")
+            except:
+                logger.warning(f"⚠️  Data inválida: {data_filtro}")
+                data_sql = None
+        
         # PRIORIDADE 1: BUSCAR DO BANCO (se disponível)
         if USE_DATABASE:
             logger.info("📊 Buscando status do BANCO...")
-            dados_banco = buscar_status_banco()
+            dados_banco = buscar_status_banco(data_sql)
             
             if dados_banco:
                 # Converter para formato esperado
@@ -688,16 +734,24 @@ def upload_mapeamento():
                 "mensagem": "Formato inválido. Esperado: objeto JSON"
             }), 400
         
+        # NORMALIZAR TELEFONES (remover hífens)
+        mapeamento_normalizado = {}
+        for telefone, ids in data.items():
+            telefone_normalizado = normalizar_telefone(telefone)
+            mapeamento_normalizado[telefone_normalizado] = ids
+            if telefone != telefone_normalizado:
+                logger.info(f"   📞 Normalizado: {telefone} → {telefone_normalizado}")
+        
         # Salvar arquivo em múltiplos nomes para garantir
         arquivos = ['mapeamento.json', 'mapeamento_telefone_ids.json', 'agenda_mapeamento.json']
         
         for arquivo in arquivos:
             with open(arquivo, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(mapeamento_normalizado, f, ensure_ascii=False, indent=2)
         
         # Contar estatísticas
-        total_telefones = len(data)
-        total_marcacoes = sum(len(marcacoes) for marcacoes in data.values())
+        total_telefones = len(mapeamento_normalizado)
+        total_marcacoes = sum(len(marcacoes) for marcacoes in mapeamento_normalizado.values())
         
         logger.info(f"✅ Mapeamento atualizado: {total_telefones} telefones, {total_marcacoes} marcações")
         
@@ -707,7 +761,7 @@ def upload_mapeamento():
                 # Preparar lista de marcações para o banco
                 marcacoes_para_banco = []
                 
-                for telefone, marcacoes_lista in data.items():
+                for telefone, marcacoes_lista in mapeamento_normalizado.items():
                     if isinstance(marcacoes_lista, list):
                         for marcacao in marcacoes_lista:
                             marcacoes_para_banco.append({
@@ -1041,29 +1095,22 @@ def webhook_confirmar():
                 
                 logger.info(f"📊 Mapeamento carregado de '{arquivo_encontrado}' com {len(mapeamento)} telefones")
                 
-                # Buscar por telefone (testar várias formatações)
-                telefones_testar = [
-                    telefone,
-                    telefone_normalizado,
-                    f"55 {telefone_normalizado[2:4]}-{telefone_normalizado[4:9]}-{telefone_normalizado[9:]}",
-                    f"55 {telefone_normalizado[2:4]}-{telefone_normalizado[4:]}"
-                ]
+                # Buscar por telefone normalizado (sem hífens)
+                telefone_normalizado = normalizar_telefone(telefone)
+                logger.info(f"   🔍 Buscando telefone normalizado: {telefone_normalizado}")
                 
-                encontrado = False
-                for tel_teste in telefones_testar:
-                    if tel_teste in mapeamento:
-                        marcacoes_info = mapeamento[tel_teste]
-                        ids_para_confirmar = [m['id_marcacao'] for m in marcacoes_info]
-                        logger.info(f"✅ Encontrado {len(ids_para_confirmar)} marcação(ões) para {tel_teste}")
-                        encontrado = True
-                        break
-                
-                if not encontrado:
-                    logger.error(f"❌ Telefone {telefone} não encontrado no mapeamento")
+                if telefone_normalizado in mapeamento:
+                    marcacoes_info = mapeamento[telefone_normalizado]
+                    ids_para_confirmar = [m['id_marcacao'] for m in marcacoes_info]
+                    logger.info(f"✅ Encontrado {len(ids_para_confirmar)} marcação(ões)")
+                else:
+                    logger.error(f"❌ Telefone {telefone_normalizado} não encontrado no mapeamento")
+                    logger.error(f"   Primeiras 5 chaves: {list(mapeamento.keys())[:5]}")
                     return jsonify({
                         "status": "error",
                         "mensagem": f"Telefone {telefone} não encontrado no mapeamento",
-                        "telefone_recebido": telefone
+                        "telefone_recebido": telefone,
+                        "telefone_normalizado": telefone_normalizado
                     }), 404
                     
             except FileNotFoundError:

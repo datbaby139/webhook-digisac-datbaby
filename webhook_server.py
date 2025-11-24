@@ -271,7 +271,7 @@ if USE_DATABASE:
 # ===== FIM FUNÇÕES DO BANCO =====
 
 # Configurações da API Visual ASA
-VISUAL_ASA_URL = "http://deskweb2oci.ddns.net:9991"
+VISUAL_ASA_URL = "http://deskweb1oci.ddns.net:9021"
 VISUAL_ASA_TOKEN = "c3Vwb3J0ZUB0ZWNub2FydGUuY29tLmJyOnB3ZHRlYzIwMjA="
 
 # Configuração API Digisac

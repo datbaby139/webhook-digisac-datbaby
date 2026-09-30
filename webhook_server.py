@@ -700,17 +700,6 @@ def status_confirmacoes():
             "mensagem": str(e)
         }), 500
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """
-    Endpoint de health check para UptimeRobot manter servidor acordado
-    """
-    return jsonify({
-        "status": "ok",
-        "timestamp": datetime.now().isoformat(),
-        "message": "Servidor webhook ativo!"
-    }), 200
-
 @app.route('/webhook/upload-mapeamento', methods=['POST'])
 def upload_mapeamento():
     """
@@ -1207,130 +1196,6 @@ def webhook_confirmar():
             "mensagem": str(e),
             "timestamp": datetime.now().isoformat()
         }), 500
-def webhook_confirmar():
-    """
-    Recebe webhook do Digisac e confirma marcação no Visual ASA
-    
-    Payload esperado:
-    {
-        "idMarcacao": 495367,
-        "paciente": "Nome do Paciente" (opcional)
-    }
-    
-    OU formato Digisac:
-    {
-        "event": "bot.command",
-        "data": {
-            "command": "524387"
-        }
-    }
-    """
-    try:
-        # Pegar dados do webhook
-        data = request.get_json()
-        
-        if not data:
-            logger.warning("⚠️  Webhook recebido sem dados")
-            return jsonify({
-                "status": "error",
-                "mensagem": "Nenhum dado recebido"
-            }), 400
-        
-        # Log do recebimento
-        logger.info(f"📩 Webhook recebido: {data}")
-        
-        # Extrair ID da marcação de diferentes formatos possíveis
-        id_marcacao = None
-        
-        # Formato 1: Direto no root
-        id_marcacao = data.get('idMarcacao') or data.get('id_marcacao') or data.get('id')
-        
-        # Formato 2: Digisac - dentro de data.command
-        if not id_marcacao and 'data' in data:
-            data_obj = data.get('data', {})
-            id_marcacao = data_obj.get('command')
-        
-        # Formato 3: Digisac - event wrapper
-        if not id_marcacao and 'event' in data:
-            if data.get('event') == 'bot.command':
-                data_obj = data.get('data', {})
-                id_marcacao = data_obj.get('command')
-        
-        if not id_marcacao:
-            logger.error("❌ ID da marcação não encontrado no payload")
-            return jsonify({
-                "status": "error",
-                "mensagem": "ID da marcação não encontrado",
-                "payload_recebido": data
-            }), 400
-        
-        # Tentar converter para int
-        try:
-            id_marcacao = int(id_marcacao)
-        except:
-            logger.error(f"❌ ID inválido: {id_marcacao}")
-            return jsonify({
-                "status": "error",
-                "mensagem": f"ID inválido: {id_marcacao}"
-            }), 400
-        
-        logger.info(f"🔍 Processando confirmação para ID: {id_marcacao}")
-        
-        # Confirmar no Visual ASA
-        endpoint_confirmar = f"{VISUAL_ASA_URL}/marcacao/{id_marcacao}"
-        
-        payload_confirmar = {
-            "isEmailConfirmado": True,
-            "dataUltConfEmail": datetime.now().isoformat()
-        }
-        
-        logger.info(f"📤 Enviando confirmação para Visual ASA: {endpoint_confirmar}")
-        
-        response = requests.patch(
-            endpoint_confirmar,
-            headers=headers,
-            json=payload_confirmar,
-            timeout=30
-        )
-        
-        if response.status_code in [200, 204]:
-            logger.info(f"✅ Marcação {id_marcacao} confirmada com sucesso!")
-            
-            # INVALIDAR CACHE para próxima consulta pegar dados atualizados
-            try:
-                if os.path.exists('cache_status.json'):
-                    os.remove('cache_status.json')
-                    logger.info("🗑️  Cache invalidado - próxima consulta buscará do ASA")
-            except Exception as e:
-                logger.warning(f"⚠️  Erro ao invalidar cache: {e}")
-            
-            return jsonify({
-                "status": "success",
-                "mensagem": f"Marcação {id_marcacao} confirmada com sucesso!",
-                "idMarcacao": id_marcacao,
-                "timestamp": datetime.now().isoformat(),
-                "visual_asa_response": response.status_code
-            }), 200
-        else:
-            logger.error(f"❌ Erro ao confirmar no Visual ASA: {response.status_code}")
-            logger.error(f"Resposta: {response.text}")
-            
-            return jsonify({
-                "status": "error",
-                "mensagem": "Erro ao confirmar no Visual ASA",
-                "idMarcacao": id_marcacao,
-                "visual_asa_status": response.status_code,
-                "visual_asa_response": response.text[:200],
-                "timestamp": datetime.now().isoformat()
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"❌ Erro no webhook: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "mensagem": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
 
 @app.route('/webhook/digisac', methods=['POST'])
 def webhook_digisac():
@@ -1363,14 +1228,15 @@ def webhook_digisac():
                 "payload_recebido": data
             }), 400
         
-        # Chamar endpoint de confirmação
+        # Delegar para a mesma lógica de confirmação
         return webhook_confirmar()
         
     except Exception as e:
         logger.error(f"❌ Erro no webhook Digisac: {str(e)}")
         return jsonify({
             "status": "error",
-            "mensagem": str(e)
+            "mensagem": str(e),
+            "timestamp": datetime.now().isoformat()
         }), 500
 
 if __name__ == '__main__':
